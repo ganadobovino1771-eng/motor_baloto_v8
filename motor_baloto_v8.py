@@ -245,6 +245,7 @@ def ejecutar_sistema_profesional():
 
     archivo_hist = 'Baloto_Historico_Perfecto.csv'
     archivo_log  = 'Registro_Inversiones.csv'
+    archivo_auditoria_filtros = 'Auditoria_Filtros.csv'
 
     if not os.path.exists(archivo_hist):
         print(f"ERROR: No se encontró {archivo_hist}")
@@ -355,6 +356,13 @@ def ejecutar_sistema_profesional():
     mask_ev      = (pool > 31).any(axis=1)
     mask_consec  = np.array([consecutivos_ok(c) for c in pool])
 
+    # ── MEJORA 1: CAPTURAR EMBUDO DE FILTROS ──
+    tras_espejo = (mask_espejo).sum()
+    tras_suma = (mask_espejo & mask_suma).sum()
+    tras_paridad = (mask_espejo & mask_suma & mask_paridad).sum()
+    tras_ev = (mask_espejo & mask_suma & mask_paridad & mask_ev).sum()
+    tras_consec = (mask_espejo & mask_suma & mask_paridad & mask_ev & mask_consec).sum()
+
     sobrevivientes = pool[mask_espejo & mask_suma & mask_paridad & mask_ev & mask_consec]
 
     if len(sobrevivientes) == 0:
@@ -368,7 +376,7 @@ def ejecutar_sistema_profesional():
     ganadora = sorted([int(x) for x in top[np.random.randint(len(top))]])
     sb_final = int(np.random.choice(sb_oro))
 
-    # 7. REGISTRO DE INVERSIÓN — v8.4+
+    # 7. REGISTRO DE INVERSIÓN — v8.4+ — ── MEJORA 2: AGREGAR Version_Motor ──
     if alerta_set:
         reg_alerta_set   = 'SI'         if alerta_set['veredicto'] == 'ALERTA'     else \
                            'MONITOREAR'  if alerta_set['veredicto'] == 'MONITOREAR' else 'NO'
@@ -392,7 +400,8 @@ def ejecutar_sistema_profesional():
         'Alerta_SET'      : reg_alerta_set,
         'Correlacion_SET' : reg_correlacion,
         'Cambios_Top5'    : reg_cambios_top5,
-        'Estado_SET'      : reg_estado_set
+        'Estado_SET'      : reg_estado_set,
+        'Version_Motor'   : 'v8.8A'
     }])
 
     if not os.path.exists(archivo_log):
@@ -402,11 +411,35 @@ def ejecutar_sistema_profesional():
         for col in ['Alerta_SET', 'Correlacion_SET', 'Cambios_Top5', 'Estado_SET']:
             if col not in df_existente.columns:
                 df_existente[col] = 'PREVIO_v8.4'
+        if 'Version_Motor' not in df_existente.columns:
+            df_existente['Version_Motor'] = 'PREVIO_v8.8A'
         if proximo_sorteo_num not in df_existente['Sorteo_Objetivo'].values:
             df_existente = pd.concat([df_existente, nueva_fila], ignore_index=True)
         df_existente.to_csv(archivo_log, index=False, sep=';')
 
-    # 8. BOLETÍN FINAL
+    # ── MEJORA 1: GUARDAR AUDITORIA_FILTROS.CSV ──
+    pct_supervivencia = round(len(sobrevivientes) / n * 100, 2)
+    nueva_auditoria = pd.DataFrame([{
+        'Fecha_Ejecucion': datetime.now().strftime('%d/%m/%Y'),
+        'Sorteo_Objetivo': proximo_sorteo_num,
+        'Pool_Inicial': n,
+        'Tras_Espejo': tras_espejo,
+        'Tras_Suma': tras_suma,
+        'Tras_Paridad': tras_paridad,
+        'Tras_EV': tras_ev,
+        'Tras_Consecutivos': tras_consec,
+        'Finalistas': len(sobrevivientes),
+        'Pct_Supervivencia': pct_supervivencia
+    }])
+
+    if not os.path.exists(archivo_auditoria_filtros):
+        nueva_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
+    else:
+        df_auditoria = pd.read_csv(archivo_auditoria_filtros, sep=';')
+        df_auditoria = pd.concat([df_auditoria, nueva_auditoria], ignore_index=True)
+        df_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
+
+    # 8. BOLETÍN FINAL — ── MEJORA 3: ACTUALIZAR VERSIÓN EN BOLETÍN ──
     pares       = sum(1 for x in ganadora if x % 2 == 0)
     impares     = 5 - pares
     suma_jugada = sum(ganadora)
@@ -423,7 +456,7 @@ def ejecutar_sistema_profesional():
 
     print("\n" + "█"*45)
     print(f"        JUGADA MAESTRA — SORTEO {proximo_sorteo_num}")
-    print(f"        (Versión 8.8 — Calibración Histórica)")
+    print(f"        (Versión 8.8A — Modo Auditoría)")
     print("█"*45)
     print(f"  JUGADA  : {ganadora}")
     print(f"  SB      : {sb_final}")
@@ -438,7 +471,7 @@ def ejecutar_sistema_profesional():
     print(f"  Acumulado Revancha: ${acum_revancha:,}M")
     print(f"  Inversión         : ${costo_ticket:,}")
     print("─"*45)
-    print("  AUDITORÍA INTELIGENTE v8.8")
+    print("  AUDITORÍA INTELIGENTE v8.8A")
     print("─"*45)
 
     if alerta_set:
@@ -488,6 +521,7 @@ def ejecutar_sistema_profesional():
 
     print("█"*45)
     print("  ✔ Registro actualizado en Registro_Inversiones.csv")
+    print("  ✔ Auditoría de filtros guardada en Auditoria_Filtros.csv")
     print("  ✔ Alerta SET persistida para análisis histórico.")
     print("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
     print("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
