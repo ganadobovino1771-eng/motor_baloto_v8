@@ -525,4 +525,5 @@ def ejecutar_sistema_profesional():
     print("  ✔ Alerta SET persistida para análisis histórico.")
     print("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
     print("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
+
 ejecutar_sistema_profesional()
