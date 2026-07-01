@@ -234,13 +234,21 @@ def analisis_trazabilidad_bloque(archivo_log):
 
 def ejecutar_sistema_profesional():
 
+    # Buffer para capturar líneas para el reporte
+    lineas_reporte = []
+
+    def agregar_linea(texto=""):
+        """Agrega una línea a la consola y al reporte."""
+        print(texto)
+        lineas_reporte.append(texto)
+
     # 0. CONTROL DE UMBRAL (Protección de Capital)
     if acum_baloto < 15000 and acum_revancha < 15000:
-        print("\n" + "!"*45)
-        print("  ALERTA: PROTOCOLO DE AHORRO ACTIVADO")
-        print(f"  Acumulados: B:{acum_baloto}M / R:{acum_revancha}M")
-        print("  Ambos < 15.000M — NO SE GENERA JUGADA.")
-        print("!"*45)
+        agregar_linea("\n" + "!"*45)
+        agregar_linea("  ALERTA: PROTOCOLO DE AHORRO ACTIVADO")
+        agregar_linea(f"  Acumulados: B:{acum_baloto}M / R:{acum_revancha}M")
+        agregar_linea("  Ambos < 15.000M — NO SE GENERA JUGADA.")
+        agregar_linea("!"*45)
         return
 
     archivo_hist = 'Baloto_Historico_Perfecto.csv'
@@ -248,20 +256,20 @@ def ejecutar_sistema_profesional():
     archivo_auditoria_filtros = 'Auditoria_Filtros.csv'
 
     if not os.path.exists(archivo_hist):
-        print(f"ERROR: No se encontró {archivo_hist}")
+        agregar_linea(f"ERROR: No se encontró {archivo_hist}")
         return
 
     # 1. CARGAR HISTORIAL Y SEMILLA DETERMINISTA
     df_hist = pd.read_csv(archivo_hist, sep=';')
     ultimo  = df_hist.iloc[-1]
 
-    print("\n" + "─"*45)
-    print("  VERIFICACIÓN DE HISTORIAL")
-    print("─"*45)
-    print(f"  Último sorteo en CSV : {int(ultimo['Sorteo'])}")
-    print(f"  Fecha                : {ultimo['Fecha']}")
-    print(f"  Números              : {[int(ultimo[f'N{i}']) for i in range(1,6)]}  SB: {int(ultimo['Superbalota'])}")
-    print("─"*45)
+    agregar_linea("\n" + "─"*45)
+    agregar_linea("  VERIFICACIÓN DE HISTORIAL")
+    agregar_linea("─"*45)
+    agregar_linea(f"  Último sorteo en CSV : {int(ultimo['Sorteo'])}")
+    agregar_linea(f"  Fecha                : {ultimo['Fecha']}")
+    agregar_linea(f"  Números              : {[int(ultimo[f'N{i}']) for i in range(1,6)]}  SB: {int(ultimo['Superbalota'])}")
+    agregar_linea("─"*45)
     
     # ── BUG 2 CORREGIDO: Detectar si sorteo objetivo es sábado ──
     proximo_sorteo_num = int(ultimo['Sorteo']) + 1
@@ -271,11 +279,11 @@ def ejecutar_sistema_profesional():
         confirmacion = input("  ¿Este sorteo corresponde al SÁBADO? (s/n): ").strip().lower()
         
         if confirmacion == 's':
-            print("─"*45)
+            agregar_linea("─"*45)
             break
         elif confirmacion == 'n':
             proximo_sorteo_num += 1
-            print("  Avanzando al siguiente sorteo...")
+            agregar_linea("  Avanzando al siguiente sorteo...")
         else:
             print("  ⚠ Responde 's' o 'n'.")
 
@@ -312,7 +320,7 @@ def ejecutar_sistema_profesional():
         
         if cambios:
             df_log.to_csv(archivo_log, index=False, sep=';')
-            print("\n✔ Auditoría actualizada — recuerda registrar el Premio manualmente.")
+            agregar_linea("\n✔ Auditoría actualizada — recuerda registrar el Premio manualmente.")
 
     # 3. ANÁLISIS DE TENDENCIAS — ÚLTIMO AÑO (v8.0)
     df_reciente = df_hist.tail(VENTANA_CALIENTES)
@@ -329,14 +337,14 @@ def ejecutar_sistema_profesional():
     trazabilidad = analisis_trazabilidad_bloque(archivo_log)
 
     # 4. SIMULACIÓN MONTE CARLO — 1.000.000 jugadas
-    print(f"\n--- PROCESANDO SORTEO {proximo_sorteo_num} (SÁBADO) ---")
+    agregar_linea(f"\n--- PROCESANDO SORTEO {proximo_sorteo_num} (SÁBADO) ---")
     n    = 1_000_000
     pool = np.array([
         np.random.choice(np.arange(1, 44), 5, replace=False)
         for _ in range(n)
     ])
 
-    # 5. FILTROS — PROTOCOLO v2.4 — CALIBRACIÓN HISTÓRICA (583 sorteos)
+    # PROTOCOLO v2.4 — Parámetros vigentes tras revisión trimestral
     def consecutivos_ok(c):
         return (np.diff(np.sort(c)) == 1).sum() <= 1
 
@@ -366,7 +374,7 @@ def ejecutar_sistema_profesional():
     sobrevivientes = pool[mask_espejo & mask_suma & mask_paridad & mask_ev & mask_consec]
 
     if len(sobrevivientes) == 0:
-        print("⚠ Sin sobrevivientes tras los filtros. Revisa el historial.")
+        agregar_linea("⚠ Sin sobrevivientes tras los filtros. Revisa el historial.")
         return
 
     # 6. SELECCIÓN POR PUNTAJE DE CALIENTES — TOP 10% (v8.1)
@@ -454,76 +462,94 @@ def ejecutar_sistema_profesional():
     else:
         zona_jugada = "—"
 
-    print("\n" + "█"*45)
-    print(f"        JUGADA MAESTRA — SORTEO {proximo_sorteo_num}")
-    print(f"        (Versión 8.8A — Modo Auditoría)")
-    print("█"*45)
-    print(f"  JUGADA  : {ganadora}")
-    print(f"  SB      : {sb_final}")
-    print(f"  SUMA    : {suma_jugada}  [{zona_jugada}]")
-    print(f"  PARIDAD : {pares} Pares / {impares} Impares")
-    print(f"  ESPEJO  : {num_espejo} → repite ≤1 número ✔")
-    print("─"*45)
-    print(f"  Calientes usados (último año): {calientes}")
-    print(f"  SB candidatos (último año)   : {sb_oro}")
-    print("─"*45)
-    print(f"  Acumulado Baloto  : ${acum_baloto:,}M")
-    print(f"  Acumulado Revancha: ${acum_revancha:,}M")
-    print(f"  Inversión         : ${costo_ticket:,}")
-    print("─"*45)
-    print("  AUDITORÍA INTELIGENTE v8.8A")
-    print("─"*45)
+    agregar_linea("\n" + "█"*45)
+    agregar_linea(f"        JUGADA MAESTRA — SORTEO {proximo_sorteo_num}")
+    agregar_linea(f"        (Versión 8.8A — Modo Auditoría)")
+    agregar_linea("█"*45)
+    agregar_linea(f"  JUGADA  : {ganadora}")
+    agregar_linea(f"  SB      : {sb_final}")
+    agregar_linea(f"  SUMA    : {suma_jugada}  [{zona_jugada}]")
+    agregar_linea(f"  PARIDAD : {pares} Pares / {impares} Impares")
+    agregar_linea(f"  ESPEJO  : {num_espejo} → repite ≤1 número ✔")
+    agregar_linea("─"*45)
+    agregar_linea(f"  Calientes usados (último año): {calientes}")
+    agregar_linea(f"  SB candidatos (último año)   : {sb_oro}")
+    agregar_linea("─"*45)
+    agregar_linea(f"  Acumulado Baloto  : ${acum_baloto:,}M")
+    agregar_linea(f"  Acumulado Revancha: ${acum_revancha:,}M")
+    agregar_linea(f"  Inversión         : ${costo_ticket:,}")
+    agregar_linea("─"*45)
+    agregar_linea("  AUDITORÍA INTELIGENTE v8.8A")
+    agregar_linea("─"*45)
 
     if alerta_set:
         icon_top5 = "✅" if alerta_set['estado_top5'] == "ESTABLE"    else \
                     "⚠️ " if alerta_set['estado_top5'] == "MONITOREAR" else "🚨"
         icon_corr = "✅" if alerta_set['estado_corr'] == "ESTABLE"    else \
                     "⚠️ " if alerta_set['estado_corr'] == "MONITOREAR" else "🚨"
-        print(f"  ESTABILIDAD DE BALOTAS")
-        print(f"  Top5 actual     : {alerta_set['top5_rec']}")
-        print(f"  Top5 anterior   : {alerta_set['top5_ant']}")
-        print(f"  Cambios Top5    : {alerta_set['cambios_top5']}  {icon_top5} {alerta_set['estado_top5']}")
-        print(f"  Correlación     : {alerta_set['correlacion']}  {icon_corr} {alerta_set['estado_corr']}")
-        print(f"  Veredicto SET   : {alerta_set['veredicto_display']}")
-        print(f"  ✔ Alerta persistida en Registro_Inversiones.csv")
+        agregar_linea(f"  ESTABILIDAD DE BALOTAS")
+        agregar_linea(f"  Top5 actual     : {alerta_set['top5_rec']}")
+        agregar_linea(f"  Top5 anterior   : {alerta_set['top5_ant']}")
+        agregar_linea(f"  Cambios Top5    : {alerta_set['cambios_top5']}  {icon_top5} {alerta_set['estado_top5']}")
+        agregar_linea(f"  Correlación     : {alerta_set['correlacion']}  {icon_corr} {alerta_set['estado_corr']}")
+        agregar_linea(f"  Veredicto SET   : {alerta_set['veredicto_display']}")
+        agregar_linea(f"  ✔ Alerta persistida en Registro_Inversiones.csv")
     else:
-        print("  ESTABILIDAD: Historial insuficiente (requiere 104+ sorteos)")
+        agregar_linea("  ESTABILIDAD: Historial insuficiente (requiere 104+ sorteos)")
 
-    print("─"*45)
+    agregar_linea("─"*45)
     if zona_suma:
-        print(f"  DISTRIBUCIÓN DE SUMAS (últimos {VENTANA_CALIENTES} sorteos)")
-        print(f"  Zona Baja  (95-105) : {zona_suma['pct_bajo']}%")
-        print(f"  Zona Media (106-115): {zona_suma['pct_medio']}%")
-        print(f"  Zona Alta  (116-125): {zona_suma['pct_alto']}%")
-        print(f"  Mediana histórica   : {zona_suma['mediana']}  |  Promedio: {zona_suma['promedio']}")
-        print(f"  Zona dominante      : {zona_suma['zona_dominante']}")
-        print(f"  Nuestra jugada cae en: {zona_jugada}")
+        agregar_linea(f"  DISTRIBUCIÓN DE SUMAS (últimos {VENTANA_CALIENTES} sorteos)")
+        agregar_linea(f"  Zona Baja  (95-105) : {zona_suma['pct_bajo']}%")
+        agregar_linea(f"  Zona Media (106-115): {zona_suma['pct_medio']}%")
+        agregar_linea(f"  Zona Alta  (116-125): {zona_suma['pct_alto']}%")
+        agregar_linea(f"  Mediana histórica   : {zona_suma['mediana']}  |  Promedio: {zona_suma['promedio']}")
+        agregar_linea(f"  Zona dominante      : {zona_suma['zona_dominante']}")
+        agregar_linea(f"  Nuestra jugada cae en: {zona_jugada}")
 
     # ── PARTE 3: TRAZABILIDAD ACUMULADA (automática cada 4 sorteos) ──
     if trazabilidad:
-        print("─"*45)
-        print("  ★ PARTE 3 — TRAZABILIDAD ACUMULADA")
-        print(f"  Sorteos del bloque  : {trazabilidad['sorteos_bloque']}")
-        print("─"*45)
-        print(f"  Aciertos por sorteo : {trazabilidad['detalle_aciertos']}")
-        print(f"  Total aciertos      : {trazabilidad['total_aciertos']}")
-        print(f"  Promedio            : {trazabilidad['promedio_aciertos']}  → {trazabilidad['nivel_efectividad']}")
-        print("─"*45)
-        print(f"  SET ALERTA          : {trazabilidad['alertas']} de 4 sorteos")
-        print(f"  SET MONITOREAR      : {trazabilidad['monitoreo']} de 4 sorteos")
-        print(f"  SET ESTABLE         : {trazabilidad['estable']} de 4 sorteos")
+        agregar_linea("─"*45)
+        agregar_linea("  ★ PARTE 3 — TRAZABILIDAD ACUMULADA")
+        agregar_linea(f"  Sorteos del bloque  : {trazabilidad['sorteos_bloque']}")
+        agregar_linea("─"*45)
+        agregar_linea(f"  Aciertos por sorteo : {trazabilidad['detalle_aciertos']}")
+        agregar_linea(f"  Total aciertos      : {trazabilidad['total_aciertos']}")
+        agregar_linea(f"  Promedio            : {trazabilidad['promedio_aciertos']}  → {trazabilidad['nivel_efectividad']}")
+        agregar_linea("─"*45)
+        agregar_linea(f"  SET ALERTA          : {trazabilidad['alertas']} de 4 sorteos")
+        agregar_linea(f"  SET MONITOREAR      : {trazabilidad['monitoreo']} de 4 sorteos")
+        agregar_linea(f"  SET ESTABLE         : {trazabilidad['estable']} de 4 sorteos")
         if trazabilidad['corr_promedio'] is not None:
-            print(f"  Correlación prom SET: {trazabilidad['corr_promedio']}")
-        print("─"*45)
-        print(f"  Veredicto del bloque: {trazabilidad['veredicto']}")
+            agregar_linea(f"  Correlación prom SET: {trazabilidad['corr_promedio']}")
+        agregar_linea("─"*45)
+        agregar_linea(f"  Veredicto del bloque: {trazabilidad['veredicto']}")
         if trazabilidad['alerta_ajuste']:
-            print(f"  {trazabilidad['alerta_ajuste']}")
+            agregar_linea(f"  {trazabilidad['alerta_ajuste']}")
 
-    print("█"*45)
-    print("  ✔ Registro actualizado en Registro_Inversiones.csv")
-    print("  ✔ Auditoría de filtros guardada en Auditoria_Filtros.csv")
-    print("  ✔ Alerta SET persistida para análisis histórico.")
-    print("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
-    print("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
+    agregar_linea("█"*45)
+    agregar_linea("  ✔ Registro actualizado en Registro_Inversiones.csv")
+    agregar_linea("  ✔ Auditoría de filtros guardada en Auditoria_Filtros.csv")
+    agregar_linea("  ✔ Alerta SET persistida para análisis histórico.")
+    agregar_linea("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
+    agregar_linea("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
+
+    # ── GENERAR REPORTE EN ARCHIVO ──
+    # Crear carpeta Reportes si no existe
+    if not os.path.exists('Reportes'):
+        os.makedirs('Reportes')
+    
+    # Nombre del archivo: Reporte_Dominical_<Sorteo_Objetivo>.txt
+    fecha_reporte = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    nombre_archivo = f'Reportes/Reporte_Dominical_{proximo_sorteo_num}.txt'
+    
+    # Guardar el reporte
+    with open(nombre_archivo, 'w', encoding='utf-8') as f:
+        f.write(f"REPORTE GENERADO: {fecha_reporte}\n")
+        f.write("="*45 + "\n\n")
+        for linea in lineas_reporte:
+            f.write(linea + "\n")
+    
+    print(f"\n✔ Reporte guardado en: {nombre_archivo}")
 
 ejecutar_sistema_profesional()
