@@ -6,18 +6,24 @@ import ast
 import re
 
 # ==========================================
+# ⚠️ NOTA CRÍTICA: Si Registro_Inversiones.csv está en OneDrive/Drive/Dropbox,
+#    asegúrate de que NO esté sincronizado con versiones locales viejas.
+#    En 17/09/2026 se perdió historial (2678-2708) por sobreescritura de backup.
+# ==========================================
+
+# ==========================================
 # CONFIGURACIÓN SEMANAL (Actualizar el Jueves)
 # ==========================================
-acum_baloto   = 44800   # Millones
-acum_revancha = 6400   # Millones
+acum_baloto   = 58000   # Millones
+acum_revancha = 3200    # Millones
 costo_ticket  = 9000    # Baloto + Revancha
 
 # ==========================================
 # VENTANA DE ANÁLISIS
 # v8.0: Se usan los últimos 52 sorteos (~1 año)
-# para calcular números calientes y Superbalota
+# como ventana para los módulos de auditoría (SET, zona de suma)
 # ==========================================
-VENTANA_CALIENTES = 52
+VENTANA_ANALISIS = 52
 
 # ==========================================
 # MÓDULOS DE AUDITORÍA
@@ -51,8 +57,8 @@ def auditar_estabilidad_balotas(df_hist, ventana=52):
     freq_ant     = frecuencias(ventana_anterior)
     top5_rec     = set(freq_rec.nlargest(5).index.tolist())
     top5_ant     = set(freq_ant.nlargest(5).index.tolist())
-    interseccion = len(top5_rec & top5_ant)   # cuántos se mantuvieron
-    cambios_top5 = 5 - interseccion           # cuántos cambiaron
+    interseccion = len(top5_rec & top5_ant)
+    cambios_top5 = 5 - interseccion
     correlacion  = freq_rec.corr(freq_ant)
 
     estado_top5 = "ESTABLE"   if cambios_top5 <= 2 else \
@@ -87,20 +93,20 @@ def auditar_zona_suma(df_hist, ventana=52):
     """
     MÓDULO 2 — ZONA CALIENTE DE SUMA (v8.3)
     Analiza distribución de sumas en 3 zonas
-    dentro del rango 95-125 ya validado.
+    dentro del rango 85-135 ya validado.
     Solo informativo — NO cambia el filtro.
     """
     df_v  = df_hist.tail(ventana)
     sumas = (df_v['N1'] + df_v['N2'] + df_v['N3'] +
              df_v['N4'] + df_v['N5'])
-    sumas_validas = sumas[(sumas >= 95) & (sumas <= 125)]
+    sumas_validas = sumas[(sumas >= 85) & (sumas <= 135)]
 
     if len(sumas_validas) == 0:
         return None
 
-    bajo  = ((sumas_validas >= 95)  & (sumas_validas <= 105)).sum()
-    medio = ((sumas_validas >= 106) & (sumas_validas <= 115)).sum()
-    alto  = ((sumas_validas >= 116) & (sumas_validas <= 125)).sum()
+    bajo  = ((sumas_validas >= 85)  & (sumas_validas <= 105)).sum()
+    medio = ((sumas_validas >= 106) & (sumas_validas <= 125)).sum()
+    alto  = ((sumas_validas >= 126) & (sumas_validas <= 135)).sum()
     total = len(sumas_validas)
 
     pct_bajo  = round(bajo  / total * 100, 1)
@@ -110,11 +116,11 @@ def auditar_zona_suma(df_hist, ventana=52):
     promedio  = round(float(sumas_validas.mean()), 1)
 
     if medio >= bajo and medio >= alto:
-        zona_dominante = f"MEDIA (106-115) — {pct_medio}% de sorteos"
+        zona_dominante = f"MEDIA (106-125) — {pct_medio}% de sorteos"
     elif bajo >= medio and bajo >= alto:
-        zona_dominante = f"BAJA (95-105) — {pct_bajo}% de sorteos"
+        zona_dominante = f"BAJA (85-105) — {pct_bajo}% de sorteos"
     else:
-        zona_dominante = f"ALTA (116-125) — {pct_alto}% de sorteos"
+        zona_dominante = f"ALTA (126-135) — {pct_alto}% de sorteos"
 
     return {
         'pct_bajo'      : pct_bajo,
@@ -322,18 +328,13 @@ def ejecutar_sistema_profesional():
             df_log.to_csv(archivo_log, index=False, sep=';')
             agregar_linea("\n✔ Auditoría actualizada — recuerda registrar el Premio manualmente.")
 
-    # 3. ANÁLISIS DE TENDENCIAS — ÚLTIMO AÑO (v8.0)
-    df_reciente = df_hist.tail(VENTANA_CALIENTES)
-    todos_rec   = pd.concat([
-        df_reciente['N1'], df_reciente['N2'], df_reciente['N3'],
-        df_reciente['N4'], df_reciente['N5']
-    ])
-    calientes = todos_rec.value_counts().head(5).index.tolist()
-    sb_oro    = df_reciente['Superbalota'].value_counts().head(2).index.tolist()
-
-    # 3B. MÓDULOS DE AUDITORÍA — Solo informativos
-    alerta_set   = auditar_estabilidad_balotas(df_hist, VENTANA_CALIENTES)
-    zona_suma    = auditar_zona_suma(df_hist, VENTANA_CALIENTES)
+    # 3. MÓDULOS DE AUDITORÍA — Solo informativos
+    # v8.8C: se retiró el módulo de "calientes" (Top5 de frecuencia) y el de
+    # "SB candidatas" (Top2 de frecuencia) tras revisión trimestral 28/09/2026 —
+    # sin persistencia estadística real (chi-cuadrado p=0.96 y p=0.44 respectivamente,
+    # ambos indistinguibles de azar puro). Ver Trazabilidad_Baloto2026.md.
+    alerta_set   = auditar_estabilidad_balotas(df_hist, VENTANA_ANALISIS)
+    zona_suma    = auditar_zona_suma(df_hist, VENTANA_ANALISIS)
     trazabilidad = analisis_trazabilidad_bloque(archivo_log)
 
     # 4. SIMULACIÓN MONTE CARLO — 1.000.000 jugadas
@@ -377,12 +378,13 @@ def ejecutar_sistema_profesional():
         agregar_linea("⚠ Sin sobrevivientes tras los filtros. Revisa el historial.")
         return
 
-    # 6. SELECCIÓN POR PUNTAJE DE CALIENTES — TOP 10% (v8.1)
-    scores   = np.array([len(np.intersect1d(c, calientes)) for c in sobrevivientes])
-    umbral   = np.percentile(scores, 90)
-    top      = sobrevivientes[scores >= umbral]
-    ganadora = sorted([int(x) for x in top[np.random.randint(len(top))]])
-    sb_final = int(np.random.choice(sb_oro))
+    # 6. SELECCIÓN UNIFORME ENTRE SOBREVIVIENTES (v8.8C)
+    # Antes se priorizaba el 10% con más coincidencias con "calientes" y se
+    # elegía la SB entre las 2 más frecuentes recientes. Ambos pasos se
+    # retiraron: no aportaban ventaja real sobre elegir uniformemente
+    # (ver revisión trimestral 28/09/2026 en la Trazabilidad).
+    ganadora = sorted([int(x) for x in sobrevivientes[np.random.randint(len(sobrevivientes))]])
+    sb_final = int(np.random.choice(np.arange(1, 17)))
 
     # 7. REGISTRO DE INVERSIÓN — v8.4+ — ── MEJORA 2: AGREGAR Version_Motor ──
     if alerta_set:
@@ -409,7 +411,7 @@ def ejecutar_sistema_profesional():
         'Correlacion_SET' : reg_correlacion,
         'Cambios_Top5'    : reg_cambios_top5,
         'Estado_SET'      : reg_estado_set,
-        'Version_Motor'   : 'v8.8A'
+        'Version_Motor'   : 'v8.8C'
     }])
 
     if not os.path.exists(archivo_log):
@@ -420,7 +422,7 @@ def ejecutar_sistema_profesional():
             if col not in df_existente.columns:
                 df_existente[col] = 'PREVIO_v8.4'
         if 'Version_Motor' not in df_existente.columns:
-            df_existente['Version_Motor'] = 'PREVIO_v8.8A'
+            df_existente['Version_Motor'] = 'PREVIO_v8.8C'
         if proximo_sorteo_num not in df_existente['Sorteo_Objetivo'].values:
             df_existente = pd.concat([df_existente, nueva_fila], ignore_index=True)
         df_existente.to_csv(archivo_log, index=False, sep=';')
@@ -444,7 +446,9 @@ def ejecutar_sistema_profesional():
         nueva_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
     else:
         df_auditoria = pd.read_csv(archivo_auditoria_filtros, sep=';')
-        df_auditoria = pd.concat([df_auditoria, nueva_auditoria], ignore_index=True)
+        # Protección anti-duplicados (fix revisión trimestral 28/09/2026)
+        if proximo_sorteo_num not in df_auditoria['Sorteo_Objetivo'].values:
+            df_auditoria = pd.concat([df_auditoria, nueva_auditoria], ignore_index=True)
         df_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
 
     # 8. BOLETÍN FINAL — ── MEJORA 3: ACTUALIZAR VERSIÓN EN BOLETÍN ──
@@ -453,18 +457,20 @@ def ejecutar_sistema_profesional():
     suma_jugada = sum(ganadora)
 
     if zona_suma:
-        if 95 <= suma_jugada <= 105:
-            zona_jugada = f"BAJA (95-105) — zona {zona_suma['pct_bajo']}% histórico"
-        elif 106 <= suma_jugada <= 115:
-            zona_jugada = f"MEDIA (106-115) — zona {zona_suma['pct_medio']}% histórico"
+        if 85 <= suma_jugada <= 105:
+            zona_jugada = f"BAJA (85-105) — zona {zona_suma['pct_bajo']}% histórico"
+        elif 106 <= suma_jugada <= 125:
+            zona_jugada = f"MEDIA (106-125) — zona {zona_suma['pct_medio']}% histórico"
+        elif 126 <= suma_jugada <= 135:
+            zona_jugada = f"ALTA (126-135) — zona {zona_suma['pct_alto']}% histórico"
         else:
-            zona_jugada = f"ALTA (116-125) — zona {zona_suma['pct_alto']}% histórico"
+            zona_jugada = "FUERA DEL RANGO v2.4"
     else:
         zona_jugada = "—"
 
     agregar_linea("\n" + "█"*45)
     agregar_linea(f"        JUGADA MAESTRA — SORTEO {proximo_sorteo_num}")
-    agregar_linea(f"        (Versión 8.8A — Modo Auditoría)")
+    agregar_linea(f"        (Versión 8.8C — Modo Auditoría v2.4)")
     agregar_linea("█"*45)
     agregar_linea(f"  JUGADA  : {ganadora}")
     agregar_linea(f"  SB      : {sb_final}")
@@ -472,14 +478,11 @@ def ejecutar_sistema_profesional():
     agregar_linea(f"  PARIDAD : {pares} Pares / {impares} Impares")
     agregar_linea(f"  ESPEJO  : {num_espejo} → repite ≤1 número ✔")
     agregar_linea("─"*45)
-    agregar_linea(f"  Calientes usados (último año): {calientes}")
-    agregar_linea(f"  SB candidatos (último año)   : {sb_oro}")
-    agregar_linea("─"*45)
     agregar_linea(f"  Acumulado Baloto  : ${acum_baloto:,}M")
     agregar_linea(f"  Acumulado Revancha: ${acum_revancha:,}M")
     agregar_linea(f"  Inversión         : ${costo_ticket:,}")
     agregar_linea("─"*45)
-    agregar_linea("  AUDITORÍA INTELIGENTE v8.8A")
+    agregar_linea("  AUDITORÍA INTELIGENTE v8.8C")
     agregar_linea("─"*45)
 
     if alerta_set:
@@ -499,10 +502,10 @@ def ejecutar_sistema_profesional():
 
     agregar_linea("─"*45)
     if zona_suma:
-        agregar_linea(f"  DISTRIBUCIÓN DE SUMAS (últimos {VENTANA_CALIENTES} sorteos)")
-        agregar_linea(f"  Zona Baja  (95-105) : {zona_suma['pct_bajo']}%")
-        agregar_linea(f"  Zona Media (106-115): {zona_suma['pct_medio']}%")
-        agregar_linea(f"  Zona Alta  (116-125): {zona_suma['pct_alto']}%")
+        agregar_linea(f"  DISTRIBUCIÓN DE SUMAS (últimos {VENTANA_ANALISIS} sorteos)")
+        agregar_linea(f"  Zona Baja  (85-105)  : {zona_suma['pct_bajo']}%")
+        agregar_linea(f"  Zona Media (106-125) : {zona_suma['pct_medio']}%")
+        agregar_linea(f"  Zona Alta  (126-135) : {zona_suma['pct_alto']}%")
         agregar_linea(f"  Mediana histórica   : {zona_suma['mediana']}  |  Promedio: {zona_suma['promedio']}")
         agregar_linea(f"  Zona dominante      : {zona_suma['zona_dominante']}")
         agregar_linea(f"  Nuestra jugada cae en: {zona_jugada}")
