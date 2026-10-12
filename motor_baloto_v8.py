@@ -4,6 +4,8 @@ from datetime import datetime
 import os
 import ast
 import re
+import shutil
+import tempfile
 
 # ==========================================
 # ⚠️ NOTA CRÍTICA: Si Registro_Inversiones.csv está en OneDrive/Drive/Dropbox,
@@ -24,6 +26,125 @@ costo_ticket  = 9000    # Baloto + Revancha
 # como ventana para los módulos de auditoría (SET, zona de suma)
 # ==========================================
 VENTANA_ANALISIS = 52
+
+
+def iniciar_respaldo_corrida():
+    """Inicia el seguimiento de respaldos para una ejecución del motor."""
+    global _archivos_respaldados_en_corrida, _marca_tiempo_respaldo
+    _archivos_respaldados_en_corrida = set()
+    _marca_tiempo_respaldo = datetime.now()
+
+
+def _respaldar_una_vez(ruta):
+    """Respalda el estado previo una sola vez por archivo durante esta corrida."""
+    global _marca_tiempo_respaldo
+    ruta = os.path.abspath(ruta)
+    if ruta in _archivos_respaldados_en_corrida:
+        return
+    _archivos_respaldados_en_corrida.add(ruta)
+    if not os.path.exists(ruta):
+        return
+
+    carpeta_respaldo = os.path.join(os.path.dirname(ruta), 'Respaldo')
+    os.makedirs(carpeta_respaldo, exist_ok=True)
+    marca = _marca_tiempo_respaldo or datetime.now()
+    nombre = os.path.basename(ruta)
+    destino = os.path.join(carpeta_respaldo, f"{nombre}_{marca.strftime('%Y%m%d_%H%M%S')}.bak")
+    while os.path.exists(destino):
+        marca += pd.Timedelta(seconds=1).to_pytimedelta()
+        destino = os.path.join(carpeta_respaldo, f"{nombre}_{marca.strftime('%Y%m%d_%H%M%S')}.bak")
+    _marca_tiempo_respaldo = marca
+    shutil.copy2(ruta, destino)
+
+    respaldos = sorted(
+        (os.path.join(carpeta_respaldo, archivo) for archivo in os.listdir(carpeta_respaldo)
+         if archivo.startswith(nombre + '_') and archivo.endswith('.bak')),
+        reverse=True,
+    )
+    for antiguo in respaldos[5:]:
+        os.remove(antiguo)
+
+
+def siguiente_ruta_reporte(sorteo, carpeta='Reportes'):
+    """Devuelve una ruta libre para el reporte de un sorteo."""
+    base = os.path.join(carpeta, f'Reporte_Dominical_{sorteo}')
+    ruta = f'{base}.txt'
+    sufijo = 2
+    while os.path.exists(ruta):
+        ruta = f'{base}_{sufijo}.txt'
+        sufijo += 1
+    return ruta
+
+
+def escribir_csv_seguro(df, archivo, sep=';'):
+    """Respalda una vez por corrida y guarda el CSV mediante reemplazo atómico."""
+    ruta = os.path.abspath(archivo)
+    carpeta = os.path.dirname(ruta)
+    os.makedirs(carpeta, exist_ok=True)
+
+    _respaldar_una_vez(ruta)
+
+    descriptor, temporal = tempfile.mkstemp(
+        prefix=f'.{os.path.basename(ruta)}.', suffix='.tmp', dir=carpeta
+    )
+    os.close(descriptor)
+    try:
+        df.to_csv(temporal, index=False, sep=sep)
+        os.replace(temporal, ruta)
+    finally:
+        if os.path.exists(temporal):
+            os.remove(temporal)
+
+
+def validar_historico(df):
+    """Valida las columnas operativas del histórico; ignora columnas extra."""
+    requeridas = ['Sorteo', 'N1', 'N2', 'N3', 'N4', 'N5', 'Superbalota']
+    if df.empty:
+        raise ValueError('el archivo no contiene sorteos.')
+
+    faltantes = [col for col in requeridas if col not in df.columns]
+    if faltantes:
+        raise ValueError(f"faltan columnas requeridas: {', '.join(faltantes)}.")
+
+    numericos = df[requeridas].apply(pd.to_numeric, errors='coerce')
+    for posicion, (_, fila) in enumerate(numericos.iterrows()):
+        sorteo_raw = df.iloc[posicion]['Sorteo']
+        etiqueta = str(sorteo_raw) if pd.notna(sorteo_raw) else f'fila {posicion + 1}'
+        for columna in requeridas:
+            valor = fila[columna]
+            if pd.isna(valor):
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor vacío o no numérico en {columna}.")
+            if not np.isfinite(float(valor)):
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor no finito en {columna}.")
+            if valor % 1 != 0:
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor no entero en {columna}: {valor}.")
+
+    sorteos = numericos['Sorteo'].to_numpy(dtype=np.int64)
+    for indice in range(1, len(sorteos)):
+        anterior, actual = int(sorteos[indice - 1]), int(sorteos[indice])
+        if actual != anterior + 1:
+            if actual > anterior + 1:
+                raise ValueError(f"después del sorteo {anterior} sigue el {actual}; falta continuidad.")
+            if actual == anterior:
+                raise ValueError(f"el sorteo {actual} está repetido después del sorteo {anterior}.")
+            raise ValueError(f"el sorteo {actual} aparece después del {anterior}; la secuencia retrocede.")
+
+    numeros = numericos[[f'N{i}' for i in range(1, 6)]]
+    for posicion, (_, fila) in enumerate(numeros.iterrows()):
+        sorteo = int(sorteos[posicion])
+        fuera_rango = [(col, int(fila[col])) for col in numeros.columns if not 1 <= fila[col] <= 43]
+        if fuera_rango:
+            detalle = ', '.join(f"{col}={valor}" for col, valor in fuera_rango)
+            raise ValueError(f"el sorteo {sorteo} tiene números fuera de rango 1-43: {detalle}.")
+        repetidos = sorted({int(valor) for valor in fila if list(fila).count(valor) > 1})
+        if repetidos:
+            raise ValueError(f"el sorteo {sorteo} tiene números repetidos: {repetidos}.")
+
+    for posicion, valor in enumerate(numericos['Superbalota']):
+        if not 1 <= valor <= 16:
+            raise ValueError(f"el sorteo {int(sorteos[posicion])} tiene Superbalota inválida: {int(valor)}; debe estar entre 1 y 16.")
+
+    return True
 
 # ==========================================
 # MÓDULOS DE AUDITORÍA
@@ -114,6 +235,7 @@ def auditar_zona_suma(df_hist, ventana=52):
     pct_alto  = round(alto  / total * 100, 1)
     mediana   = round(float(sumas_validas.median()), 1)
     promedio  = round(float(sumas_validas.mean()), 1)
+    sorteos_analizados = len(df_v)
 
     if medio >= bajo and medio >= alto:
         zona_dominante = f"MEDIA (106-125) — {pct_medio}% de sorteos"
@@ -128,6 +250,8 @@ def auditar_zona_suma(df_hist, ventana=52):
         'pct_alto'      : pct_alto,
         'mediana'       : mediana,
         'promedio'      : promedio,
+        'sorteos_dentro_rango': total,
+        'sorteos_analizados'  : sorteos_analizados,
         'zona_dominante': zona_dominante
     }
 
@@ -155,30 +279,28 @@ def analisis_trazabilidad_bloque(archivo_log):
 
     df = pd.read_csv(archivo_log, sep=';')
 
-    # Solo activar si hay al menos 4 registros completos
-    # (Aciertos_Post ya calculados, no Pendiente)
-    df_completados = df[df['Aciertos_Post'] != 'Pendiente']
-    if len(df_completados) < 4:
+    # Descartar Pendiente, vacíos, NaN y formatos sin patrón de aciertos.
+    if 'Aciertos_Post' not in df.columns:
+        return None
+    aciertos_parseados = []
+    indices_validos = []
+    for indice, valor in df['Aciertos_Post'].items():
+        match = re.search(r'(\d+)N', valor) if isinstance(valor, str) else None
+        if match:
+            indices_validos.append(indice)
+            aciertos_parseados.append(int(match.group(1)))
+
+    if len(indices_validos) < 4:
         return None
 
+    df_completados = df.loc[indices_validos].copy()
+    df_completados['_aciertos_parseados'] = aciertos_parseados
     df_4 = df_completados.tail(4).copy()
 
     # 1. ACIERTOS ACUMULADOS
-    # v8.6 — Parsing blindado con regex
-    # Tolerante a variaciones de formato:
-    # "2N + 1SB", "2N+1SB", "2 N + 1 SB"
-    total_aciertos = 0
-    detalles       = []
-    for val in df_4['Aciertos_Post']:
-        if isinstance(val, str):
-            match = re.search(r'(\d+)N', val)
-            n = int(match.group(1)) if match else 0
-        else:
-            n = 0
-        total_aciertos += n
-        detalles.append(n)
-
-    promedio_aciertos = round(total_aciertos / 4, 2)
+    detalles = df_4['_aciertos_parseados'].astype(int).tolist()
+    total_aciertos = sum(detalles)
+    promedio_aciertos = round(total_aciertos / len(df_4), 2)
 
     # Umbral calibrado para Baloto Colombia
     # E[aciertos] = 5/43 * 5 ≈ 0.58 por sorteo
@@ -239,6 +361,7 @@ def analisis_trazabilidad_bloque(archivo_log):
 
 
 def ejecutar_sistema_profesional():
+    iniciar_respaldo_corrida()
 
     # Buffer para capturar líneas para el reporte
     lineas_reporte = []
@@ -266,7 +389,19 @@ def ejecutar_sistema_profesional():
         return
 
     # 1. CARGAR HISTORIAL Y SEMILLA DETERMINISTA
-    df_hist = pd.read_csv(archivo_hist, sep=';')
+    try:
+        df_hist = pd.read_csv(archivo_hist, sep=';')
+    except pd.errors.EmptyDataError:
+        agregar_linea("ERROR: Historial inválido: el archivo está vacío y no contiene sorteos.")
+        return
+    except (pd.errors.ParserError, UnicodeDecodeError) as exc:
+        agregar_linea(f"ERROR: No se pudo leer el historial CSV: {exc}")
+        return
+    try:
+        validar_historico(df_hist)
+    except ValueError as exc:
+        agregar_linea(f"ERROR: Historial inválido: {exc}")
+        return
     ultimo  = df_hist.iloc[-1]
 
     agregar_linea("\n" + "─"*45)
@@ -292,7 +427,7 @@ def ejecutar_sistema_profesional():
             agregar_linea("  Avanzando al siguiente sorteo...")
         else:
             print("  ⚠ Responde 's' o 'n'.")
-
+    
     np.random.seed(proximo_sorteo_num)
 
     num_espejo = [int(ultimo[f'N{i}']) for i in range(1, 6)]
@@ -325,7 +460,7 @@ def ejecutar_sistema_profesional():
                     pass
         
         if cambios:
-            df_log.to_csv(archivo_log, index=False, sep=';')
+            escribir_csv_seguro(df_log, archivo_log)
             agregar_linea("\n✔ Auditoría actualizada — recuerda registrar el Premio manualmente.")
 
     # 3. MÓDULOS DE AUDITORÍA — Solo informativos
@@ -411,11 +546,13 @@ def ejecutar_sistema_profesional():
         'Correlacion_SET' : reg_correlacion,
         'Cambios_Top5'    : reg_cambios_top5,
         'Estado_SET'      : reg_estado_set,
-        'Version_Motor'   : 'v8.8C'
+        'Version_Motor'   : 'v8.8E'
     }])
 
+    registro_agregado = False
     if not os.path.exists(archivo_log):
-        nueva_fila.to_csv(archivo_log, index=False, sep=';')
+        escribir_csv_seguro(nueva_fila, archivo_log)
+        registro_agregado = True
     else:
         df_existente = pd.read_csv(archivo_log, sep=';')
         for col in ['Alerta_SET', 'Correlacion_SET', 'Cambios_Top5', 'Estado_SET']:
@@ -425,7 +562,8 @@ def ejecutar_sistema_profesional():
             df_existente['Version_Motor'] = 'PREVIO_v8.8C'
         if proximo_sorteo_num not in df_existente['Sorteo_Objetivo'].values:
             df_existente = pd.concat([df_existente, nueva_fila], ignore_index=True)
-        df_existente.to_csv(archivo_log, index=False, sep=';')
+            escribir_csv_seguro(df_existente, archivo_log)
+            registro_agregado = True
 
     # ── MEJORA 1: GUARDAR AUDITORIA_FILTROS.CSV ──
     pct_supervivencia = round(len(sobrevivientes) / n * 100, 2)
@@ -442,14 +580,17 @@ def ejecutar_sistema_profesional():
         'Pct_Supervivencia': pct_supervivencia
     }])
 
+    auditoria_agregada = False
     if not os.path.exists(archivo_auditoria_filtros):
-        nueva_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
+        escribir_csv_seguro(nueva_auditoria, archivo_auditoria_filtros)
+        auditoria_agregada = True
     else:
         df_auditoria = pd.read_csv(archivo_auditoria_filtros, sep=';')
         # Protección anti-duplicados (fix revisión trimestral 28/09/2026)
         if proximo_sorteo_num not in df_auditoria['Sorteo_Objetivo'].values:
             df_auditoria = pd.concat([df_auditoria, nueva_auditoria], ignore_index=True)
-        df_auditoria.to_csv(archivo_auditoria_filtros, index=False, sep=';')
+            escribir_csv_seguro(df_auditoria, archivo_auditoria_filtros)
+            auditoria_agregada = True
 
     # 8. BOLETÍN FINAL — ── MEJORA 3: ACTUALIZAR VERSIÓN EN BOLETÍN ──
     pares       = sum(1 for x in ganadora if x % 2 == 0)
@@ -469,8 +610,9 @@ def ejecutar_sistema_profesional():
         zona_jugada = "—"
 
     agregar_linea("\n" + "█"*45)
-    agregar_linea(f"        JUGADA MAESTRA — SORTEO {proximo_sorteo_num}")
-    agregar_linea(f"        (Versión 8.8C — Modo Auditoría v2.4)")
+    agregar_linea(f"        JUGADA FILTRADA — SORTEO {proximo_sorteo_num}")
+    agregar_linea("        Los filtros ordenan la selección; no mejoran la probabilidad de acierto")
+    agregar_linea(f"        (Versión 8.8E — Modo Auditoría v2.4)")
     agregar_linea("█"*45)
     agregar_linea(f"  JUGADA  : {ganadora}")
     agregar_linea(f"  SB      : {sb_final}")
@@ -482,7 +624,7 @@ def ejecutar_sistema_profesional():
     agregar_linea(f"  Acumulado Revancha: ${acum_revancha:,}M")
     agregar_linea(f"  Inversión         : ${costo_ticket:,}")
     agregar_linea("─"*45)
-    agregar_linea("  AUDITORÍA INTELIGENTE v8.8C")
+    agregar_linea("  AUDITORÍA INTELIGENTE v8.8E")
     agregar_linea("─"*45)
 
     if alerta_set:
@@ -496,13 +638,17 @@ def ejecutar_sistema_profesional():
         agregar_linea(f"  Cambios Top5    : {alerta_set['cambios_top5']}  {icon_top5} {alerta_set['estado_top5']}")
         agregar_linea(f"  Correlación     : {alerta_set['correlacion']}  {icon_corr} {alerta_set['estado_corr']}")
         agregar_linea(f"  Veredicto SET   : {alerta_set['veredicto_display']}")
-        agregar_linea(f"  ✔ Alerta persistida en Registro_Inversiones.csv")
+        if registro_agregado:
+            agregar_linea("  ✔ Alerta persistida en Registro_Inversiones.csv")
+        else:
+            agregar_linea(f"  ⚠ El sorteo {proximo_sorteo_num} ya estaba registrado; la alerta SET no se agregó")
     else:
         agregar_linea("  ESTABILIDAD: Historial insuficiente (requiere 104+ sorteos)")
 
     agregar_linea("─"*45)
     if zona_suma:
-        agregar_linea(f"  DISTRIBUCIÓN DE SUMAS (últimos {VENTANA_ANALISIS} sorteos)")
+        agregar_linea(f"  DISTRIBUCIÓN DE SUMAS (últimos {zona_suma['sorteos_analizados']} sorteos)")
+        agregar_linea(f"  Dentro de 85-135: {zona_suma['sorteos_dentro_rango']} de {zona_suma['sorteos_analizados']} sorteos")
         agregar_linea(f"  Zona Baja  (85-105)  : {zona_suma['pct_bajo']}%")
         agregar_linea(f"  Zona Media (106-125) : {zona_suma['pct_medio']}%")
         agregar_linea(f"  Zona Alta  (126-135) : {zona_suma['pct_alto']}%")
@@ -531,9 +677,18 @@ def ejecutar_sistema_profesional():
             agregar_linea(f"  {trazabilidad['alerta_ajuste']}")
 
     agregar_linea("█"*45)
-    agregar_linea("  ✔ Registro actualizado en Registro_Inversiones.csv")
-    agregar_linea("  ✔ Auditoría de filtros guardada en Auditoria_Filtros.csv")
-    agregar_linea("  ✔ Alerta SET persistida para análisis histórico.")
+    if registro_agregado:
+        agregar_linea("  ✔ Fila agregada en Registro_Inversiones.csv")
+    else:
+        agregar_linea(f"  ⚠ El sorteo {proximo_sorteo_num} ya estaba registrado; no se agregó fila en Registro_Inversiones.csv")
+    if auditoria_agregada:
+        agregar_linea("  ✔ Fila agregada en Auditoria_Filtros.csv")
+    else:
+        agregar_linea(f"  ⚠ El sorteo {proximo_sorteo_num} ya estaba registrado; no se agregó fila en Auditoria_Filtros.csv")
+    if registro_agregado:
+        agregar_linea("  ✔ Alerta SET persistida para análisis histórico.")
+    else:
+        agregar_linea("  ℹ La alerta SET de este sorteo no se agregó al registro existente.")
     agregar_linea("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
     agregar_linea("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
 
@@ -544,7 +699,7 @@ def ejecutar_sistema_profesional():
     
     # Nombre del archivo: Reporte_Dominical_<Sorteo_Objetivo>.txt
     fecha_reporte = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-    nombre_archivo = f'Reportes/Reporte_Dominical_{proximo_sorteo_num}.txt'
+    nombre_archivo = siguiente_ruta_reporte(proximo_sorteo_num)
     
     # Guardar el reporte
     with open(nombre_archivo, 'w', encoding='utf-8') as f:
@@ -555,4 +710,6 @@ def ejecutar_sistema_profesional():
     
     print(f"\n✔ Reporte guardado en: {nombre_archivo}")
 
-ejecutar_sistema_profesional()
+if __name__ == "__main__":
+    ejecutar_sistema_profesional()
+
