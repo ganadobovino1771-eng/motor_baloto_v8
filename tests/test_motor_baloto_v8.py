@@ -133,6 +133,7 @@ class MotorBalotoRobustezTests(unittest.TestCase):
 
             texto = salida.getvalue()
             self.assertIn('⚠ El sorteo 105 ya estaba registrado; no se agregó fila', texto)
+            self.assertEqual(texto.count('⚠ El sorteo 105 ya estaba registrado; no se agregó fila'), 2)
             self.assertEqual(len(pd.read_csv(raiz / 'Registro_Inversiones.csv', sep=';')), 1)
             self.assertEqual(len(pd.read_csv(raiz / 'Auditoria_Filtros.csv', sep=';')), 1)
 
