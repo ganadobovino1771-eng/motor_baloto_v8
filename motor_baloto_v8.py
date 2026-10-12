@@ -28,14 +28,61 @@ costo_ticket  = 9000    # Baloto + Revancha
 VENTANA_ANALISIS = 52
 
 
+def iniciar_respaldo_corrida():
+    """Inicia el seguimiento de respaldos para una ejecución del motor."""
+    global _archivos_respaldados_en_corrida, _marca_tiempo_respaldo
+    _archivos_respaldados_en_corrida = set()
+    _marca_tiempo_respaldo = datetime.now()
+
+
+def _respaldar_una_vez(ruta):
+    """Respalda el estado previo una sola vez por archivo durante esta corrida."""
+    global _marca_tiempo_respaldo
+    ruta = os.path.abspath(ruta)
+    if ruta in _archivos_respaldados_en_corrida:
+        return
+    _archivos_respaldados_en_corrida.add(ruta)
+    if not os.path.exists(ruta):
+        return
+
+    carpeta_respaldo = os.path.join(os.path.dirname(ruta), 'Respaldo')
+    os.makedirs(carpeta_respaldo, exist_ok=True)
+    marca = _marca_tiempo_respaldo or datetime.now()
+    nombre = os.path.basename(ruta)
+    destino = os.path.join(carpeta_respaldo, f"{nombre}_{marca.strftime('%Y%m%d_%H%M%S')}.bak")
+    while os.path.exists(destino):
+        marca += pd.Timedelta(seconds=1).to_pytimedelta()
+        destino = os.path.join(carpeta_respaldo, f"{nombre}_{marca.strftime('%Y%m%d_%H%M%S')}.bak")
+    _marca_tiempo_respaldo = marca
+    shutil.copy2(ruta, destino)
+
+    respaldos = sorted(
+        (os.path.join(carpeta_respaldo, archivo) for archivo in os.listdir(carpeta_respaldo)
+         if archivo.startswith(nombre + '_') and archivo.endswith('.bak')),
+        reverse=True,
+    )
+    for antiguo in respaldos[5:]:
+        os.remove(antiguo)
+
+
+def siguiente_ruta_reporte(sorteo, carpeta='Reportes'):
+    """Devuelve una ruta libre para el reporte de un sorteo."""
+    base = os.path.join(carpeta, f'Reporte_Dominical_{sorteo}')
+    ruta = f'{base}.txt'
+    sufijo = 2
+    while os.path.exists(ruta):
+        ruta = f'{base}_{sufijo}.txt'
+        sufijo += 1
+    return ruta
+
+
 def escribir_csv_seguro(df, archivo, sep=';'):
-    """Guarda un CSV de forma atómica y conserva una copia .bak del anterior."""
+    """Respalda una vez por corrida y guarda el CSV mediante reemplazo atómico."""
     ruta = os.path.abspath(archivo)
     carpeta = os.path.dirname(ruta)
     os.makedirs(carpeta, exist_ok=True)
 
-    if os.path.exists(ruta):
-        shutil.copy2(ruta, ruta + '.bak')
+    _respaldar_una_vez(ruta)
 
     descriptor, temporal = tempfile.mkstemp(
         prefix=f'.{os.path.basename(ruta)}.', suffix='.tmp', dir=carpeta
@@ -60,27 +107,42 @@ def validar_historico(df):
         raise ValueError(f"faltan columnas requeridas: {', '.join(faltantes)}.")
 
     numericos = df[requeridas].apply(pd.to_numeric, errors='coerce')
-    invalidos = numericos.isna().any()
-    if invalidos.any():
-        columnas = ', '.join(invalidos[invalidos].index.tolist())
-        raise ValueError(f"hay valores vacíos o no numéricos en: {columnas}.")
-
-    if not np.isfinite(numericos.to_numpy(dtype=float)).all():
-        raise ValueError('las columnas requeridas contienen valores no finitos.')
-    if not (numericos % 1 == 0).all().all():
-        raise ValueError('Sorteo, N1..N5 y Superbalota deben ser números enteros.')
+    for posicion, (_, fila) in enumerate(numericos.iterrows()):
+        sorteo_raw = df.iloc[posicion]['Sorteo']
+        etiqueta = str(sorteo_raw) if pd.notna(sorteo_raw) else f'fila {posicion + 1}'
+        for columna in requeridas:
+            valor = fila[columna]
+            if pd.isna(valor):
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor vacío o no numérico en {columna}.")
+            if not np.isfinite(float(valor)):
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor no finito en {columna}.")
+            if valor % 1 != 0:
+                raise ValueError(f"el sorteo {etiqueta} tiene un valor no entero en {columna}: {valor}.")
 
     sorteos = numericos['Sorteo'].to_numpy(dtype=np.int64)
-    if len(sorteos) > 1 and not np.all(np.diff(sorteos) == 1):
-        raise ValueError('los números de Sorteo deben ser consecutivos y crecientes.')
+    for indice in range(1, len(sorteos)):
+        anterior, actual = int(sorteos[indice - 1]), int(sorteos[indice])
+        if actual != anterior + 1:
+            if actual > anterior + 1:
+                raise ValueError(f"después del sorteo {anterior} sigue el {actual}; falta continuidad.")
+            if actual == anterior:
+                raise ValueError(f"el sorteo {actual} está repetido después del sorteo {anterior}.")
+            raise ValueError(f"el sorteo {actual} aparece después del {anterior}; la secuencia retrocede.")
 
     numeros = numericos[[f'N{i}' for i in range(1, 6)]]
-    if not numeros.apply(lambda fila: fila.between(1, 43).all(), axis=1).all():
-        raise ValueError('N1..N5 deben estar entre 1 y 43.')
-    if not numeros.nunique(axis=1).eq(5).all():
-        raise ValueError('cada sorteo debe contener cinco números distintos en N1..N5.')
-    if not numericos['Superbalota'].between(1, 16).all():
-        raise ValueError('Superbalota debe estar entre 1 y 16.')
+    for posicion, (_, fila) in enumerate(numeros.iterrows()):
+        sorteo = int(sorteos[posicion])
+        fuera_rango = [(col, int(fila[col])) for col in numeros.columns if not 1 <= fila[col] <= 43]
+        if fuera_rango:
+            detalle = ', '.join(f"{col}={valor}" for col, valor in fuera_rango)
+            raise ValueError(f"el sorteo {sorteo} tiene números fuera de rango 1-43: {detalle}.")
+        repetidos = sorted({int(valor) for valor in fila if list(fila).count(valor) > 1})
+        if repetidos:
+            raise ValueError(f"el sorteo {sorteo} tiene números repetidos: {repetidos}.")
+
+    for posicion, valor in enumerate(numericos['Superbalota']):
+        if not 1 <= valor <= 16:
+            raise ValueError(f"el sorteo {int(sorteos[posicion])} tiene Superbalota inválida: {int(valor)}; debe estar entre 1 y 16.")
 
     return True
 
@@ -299,6 +361,7 @@ def analisis_trazabilidad_bloque(archivo_log):
 
 
 def ejecutar_sistema_profesional():
+    iniciar_respaldo_corrida()
 
     # Buffer para capturar líneas para el reporte
     lineas_reporte = []
@@ -483,7 +546,7 @@ def ejecutar_sistema_profesional():
         'Correlacion_SET' : reg_correlacion,
         'Cambios_Top5'    : reg_cambios_top5,
         'Estado_SET'      : reg_estado_set,
-        'Version_Motor'   : 'v8.8D'
+        'Version_Motor'   : 'v8.8E'
     }])
 
     registro_agregado = False
@@ -549,7 +612,7 @@ def ejecutar_sistema_profesional():
     agregar_linea("\n" + "█"*45)
     agregar_linea(f"        JUGADA FILTRADA — SORTEO {proximo_sorteo_num}")
     agregar_linea("        Los filtros ordenan la selección; no mejoran la probabilidad de acierto")
-    agregar_linea(f"        (Versión 8.8D — Modo Auditoría v2.4)")
+    agregar_linea(f"        (Versión 8.8E — Modo Auditoría v2.4)")
     agregar_linea("█"*45)
     agregar_linea(f"  JUGADA  : {ganadora}")
     agregar_linea(f"  SB      : {sb_final}")
@@ -561,7 +624,7 @@ def ejecutar_sistema_profesional():
     agregar_linea(f"  Acumulado Revancha: ${acum_revancha:,}M")
     agregar_linea(f"  Inversión         : ${costo_ticket:,}")
     agregar_linea("─"*45)
-    agregar_linea("  AUDITORÍA INTELIGENTE v8.8D")
+    agregar_linea("  AUDITORÍA INTELIGENTE v8.8E")
     agregar_linea("─"*45)
 
     if alerta_set:
@@ -636,7 +699,7 @@ def ejecutar_sistema_profesional():
     
     # Nombre del archivo: Reporte_Dominical_<Sorteo_Objetivo>.txt
     fecha_reporte = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-    nombre_archivo = f'Reportes/Reporte_Dominical_{proximo_sorteo_num}.txt'
+    nombre_archivo = siguiente_ruta_reporte(proximo_sorteo_num)
     
     # Guardar el reporte
     with open(nombre_archivo, 'w', encoding='utf-8') as f:
