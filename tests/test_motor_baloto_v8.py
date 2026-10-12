@@ -40,11 +40,43 @@ class MotorBalotoRobustezTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT) as carpeta:
             archivo = Path(carpeta) / 'datos.csv'
             archivo.write_text('anterior\n', encoding='utf-8')
+            motor.iniciar_respaldo_corrida()
             motor.escribir_csv_seguro(pd.DataFrame({'valor': [1]}), str(archivo))
 
-            self.assertEqual(Path(str(archivo) + '.bak').read_text(encoding='utf-8'), 'anterior\n')
+            respaldos = list((Path(carpeta) / 'Respaldo').glob('datos.csv_*.bak'))
+            self.assertEqual(len(respaldos), 1)
+            self.assertEqual(respaldos[0].read_text(encoding='utf-8'), 'anterior\n')
             self.assertEqual(pd.read_csv(archivo, sep=';').iloc[0]['valor'], 1)
             self.assertFalse(list(Path(carpeta).glob('*.tmp')))
+
+    def test_respalda_una_vez_por_corrida_y_retiene_cinco(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as carpeta:
+            archivo = Path(carpeta) / 'Registro_Inversiones.csv'
+            archivo.write_bytes(b'contenido original exacto\r\n')
+            original = archivo.read_bytes()
+
+            for corrida in range(1, 7):
+                motor.iniciar_respaldo_corrida()
+                motor.escribir_csv_seguro(pd.DataFrame({'valor': [corrida]}), str(archivo))
+                motor.escribir_csv_seguro(pd.DataFrame({'valor': [corrida, corrida]}), str(archivo))
+                respaldos = list((Path(carpeta) / 'Respaldo').glob('Registro_Inversiones.csv_*.bak'))
+                if corrida == 1:
+                    self.assertEqual(len(respaldos), 1)
+                    self.assertEqual(respaldos[0].read_bytes(), original)
+                self.assertLessEqual(len(respaldos), 5)
+
+            self.assertEqual(len(list((Path(carpeta) / 'Respaldo').glob('Registro_Inversiones.csv_*.bak'))), 5)
+
+    def test_reporte_existente_usa_sufijo_sin_pisarlo(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as carpeta:
+            primero = Path(carpeta) / 'Reporte_Dominical_2717.txt'
+            primero.write_text('reporte previo', encoding='utf-8')
+            segundo = Path(motor.siguiente_ruta_reporte(2717, carpeta))
+            self.assertEqual(segundo.name, 'Reporte_Dominical_2717_2.txt')
+            segundo.write_text('reporte nuevo', encoding='utf-8')
+            tercero = motor.siguiente_ruta_reporte(2717, carpeta)
+            self.assertTrue(tercero.endswith('Reporte_Dominical_2717_3.txt'))
+            self.assertEqual(primero.read_text(encoding='utf-8'), 'reporte previo')
 
     def test_historico_invalido_aborta_sin_escribir_archivos(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as carpeta:
@@ -69,7 +101,7 @@ class MotorBalotoRobustezTests(unittest.TestCase):
                 os.chdir(cwd_original)
 
             self.assertIn('Historial inválido', salida.getvalue())
-            self.assertIn('cinco números distintos', salida.getvalue())
+            self.assertIn('el sorteo 3 tiene números repetidos', salida.getvalue())
             self.assertEqual(registro.read_text(encoding='utf-8'), 'registro intacto\n')
             self.assertEqual(auditoria.read_text(encoding='utf-8'), 'auditoria intacta\n')
             self.assertFalse((raiz / 'Reportes').exists())
@@ -85,6 +117,17 @@ class MotorBalotoRobustezTests(unittest.TestCase):
             self.assertIn('el archivo está vacío', salida_vacia.getvalue())
             self.assertEqual(registro.read_text(encoding='utf-8'), 'registro intacto\n')
             self.assertEqual(auditoria.read_text(encoding='utf-8'), 'auditoria intacta\n')
+
+    def test_validacion_identifica_sorteo_con_hueco_o_sb_invalida(self):
+        df = historico_sintetico(4)
+        df.loc[2, 'Sorteo'] = 4
+        with self.assertRaisesRegex(ValueError, 'después del sorteo 2 sigue el 4'):
+            motor.validar_historico(df)
+
+        df = historico_sintetico(4)
+        df.loc[2, 'Superbalota'] = 17
+        with self.assertRaisesRegex(ValueError, 'sorteo 3 tiene Superbalota inválida'):
+            motor.validar_historico(df)
 
     def test_sorteo_duplicado_no_agrega_filas_y_avisa(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as carpeta:
