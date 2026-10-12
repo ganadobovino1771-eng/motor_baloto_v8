@@ -622,7 +622,10 @@ def ejecutar_sistema_profesional():
         agregar_linea("  ✔ Fila agregada en Auditoria_Filtros.csv")
     else:
         agregar_linea(f"  ⚠ El sorteo {proximo_sorteo_num} ya estaba registrado; no se agregó fila en Auditoria_Filtros.csv")
-    agregar_linea("  ✔ Alerta SET persistida para análisis histórico.")
+    if registro_agregado:
+        agregar_linea("  ✔ Alerta SET persistida para análisis histórico.")
+    else:
+        agregar_linea("  ℹ La alerta SET de este sorteo no se agregó al registro existente.")
     agregar_linea("  ⚠ Recuerda ingresar el Premio manualmente tras el sorteo.")
     agregar_linea("  ℹ Módulos de auditoría son informativos — no afectan la jugada.")
 
